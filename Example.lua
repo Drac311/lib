@@ -1,6 +1,6 @@
 -- Ejemplo de uso de DraxiLib
 -- Sube DraxiLib.lua a GitHub (raw) y cargalo asi, igual que Rayfield:
-local Library = loadstring(game:HttpGet("TU_URL_RAW"))()
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/Drac311/lib/refs/heads/main/DraxiLib.lua"))()
 
 local Window = Library:CreateWindow({
 	Name = "Draxi Script",

@@ -1,5 +1,5 @@
 -- Sube DraxiLib.lua a GitHub y pon aqui la URL RAW real (debe empezar por https://)
-local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main/DraxiLib.lua"))()
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/Drac311/lib/refs/heads/main/DraxiLib.lua"))()
 
 local Window = Library:CreateWindow({
 	Name = "Draxi Script",

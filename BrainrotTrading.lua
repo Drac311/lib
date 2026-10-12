@@ -40,6 +40,10 @@ local UNIDADES = {
 	"Ben",
 	"Happy Banana Meme",
 	"Trollface",
+	"Illuminati",
+	"Chicleteirina Bicicleteirina",
+	"Chiceletira Bicicleteira",
+	"Quesadilla Crocodila",
 }
 
 -- ============================================================

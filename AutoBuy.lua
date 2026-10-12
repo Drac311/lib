@@ -55,7 +55,7 @@ local Window = Library:CreateWindow({
 	Scale = 1,
 	ConfigName = "AutoBuy",
 	-- Para "Auto Execute" (2ndPage): URL RAW de ESTE script (sube este archivo a tu repo como AutoBuy.lua)
-	ScriptUrl = "https://raw.githubusercontent.com/Drac311/lib/refs/heads/main/AutoBuy.lua",
+	ScriptUrl = "https://raw.githubusercontent.com/Drac311/lib/refs/heads/main/BrainrotTrading.lua",
 })
 
 local AutoTab = Window:CreateTab("Auto Buy") -- 1a llamada -> MainPage (aqui va todo)

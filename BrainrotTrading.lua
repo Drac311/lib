@@ -32,6 +32,14 @@ local UNIDADES = {
 	"Chillin Chili",
 	"Nuclearo Dinosauro",
 	"Swag Soda",
+	"Nyan Cat",
+	"Pepe",
+	"Happy Banana Cat",
+	"Smurf Cat",
+	"67",
+	"Ben",
+	"Happy Banana Meme",
+	"Trollface",
 }
 
 -- ============================================================

@@ -68,6 +68,38 @@ local function formatNumber(n)
     else return tostring(math.floor(n)) end
 end
 
+-- ── Función de Webhook ───────────────────────────────────────
+local function sendWebhook(brainrotName, value, income)
+    if S.webhookUrl == "" or S.webhookUrl == nil then return end
+    
+    local req = (syn and syn.request) or (http and http.request) or http_request or request
+    if not req then return end
+
+    local data = {
+        embeds = {
+            {
+                title = "🎉 ¡Brainrot de Alto Valor Encontrado!",
+                color = 65280,
+                fields = {
+                    { name = "🧠 Brainrot", value = tostring(brainrotName), inline = true },
+                    { name = "💰 Valor", value = formatNumber(value).." ("..tostring(value)..")", inline = true },
+                    { name = "💵 Dinero/Seg", value = formatNumber(income).." ("..tostring(income)..")", inline = true }
+                },
+                footer = { text = "Draxi Script • " .. os.date("%X") }
+            }
+        }
+    }
+    
+    pcall(function()
+        req({
+            Url = S.webhookUrl,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = HttpService:JSONEncode(data)
+        })
+    end)
+end
+
 -- ── Ventana ──────────────────────────────────────────────────
 local Window = Library:CreateWindow({
     Name         = "Steal a Brainrot",
@@ -76,7 +108,6 @@ local Window = Library:CreateWindow({
     ToggleKey    = Enum.KeyCode.RightShift,
     StartVisible = true,
     Scale        = 1,
-    -- 🚨 URL DE AUTO EXECUTE AÑADIDA AQUÍ
     ScriptUrl    = "https://raw.githubusercontent.com/Drac311/lib/refs/heads/main/sam"
 })
 
@@ -97,6 +128,10 @@ local S = {
     myBasePos = nil,
     autoServerHop = false,
     minBrainrotValue = 1000000,
+    -- 🚨 NUEVOS ESTADOS PARA EL WEBHOOK
+    webhookEnabled = false,
+    webhookUrl = "",
+    lastNotified = nil
 }
 
 local _autoStealToggle
@@ -174,6 +209,34 @@ local function getBrainrotValue(model)
     end
     
     return value * mutMultiplier
+end
+
+-- 🚨 FUNCIÓN PARA OBTENER EL DINERO POR SEGUNDO
+local function getBrainrotIncome(model)
+    local baseName = model.Name
+    local income = 0
+    
+    if AnimalData[baseName] and type(AnimalData[baseName]) == "table" then
+        income = AnimalData[baseName].Income or AnimalData[baseName].Money or AnimalData[baseName].Earnings or AnimalData[baseName].IncomePerSecond or 0
+    end
+    
+    if income == 0 then
+        income = model:GetAttribute("Income") or model:GetAttribute("Money") or 0
+    end
+    
+    if income == 0 then
+        for _, v in ipairs(model:GetDescendants()) do
+            if v:IsA("NumberValue") or v:IsA("IntValue") then
+                local vName = v.Name:lower()
+                if vName:find("income") or vName:find("money") or vName:find("earn") or vName:find("persec") or vName:find("rate") then
+                    income = v.Value
+                    break
+                end
+            end
+        end
+    end
+    
+    return income
 end
 
 local function isInFusion(model)
@@ -760,15 +823,17 @@ local function PerformStealSequence()
     return nil
 end
 
--- ── AUTO SERVER HOP LOOP ─────────────────────────────────────
+-- ── AUTO SERVER HOP & WEBHOOK LOOP ───────────────────────────
 task.spawn(function()
     task.wait(5)
     while task.wait(5) do
+        local bestModel, val = findBestBrainrot()
+        
+        -- 1. Lógica del Server Hop (Si es menor al mínimo, salta)
         if S.autoServerHop and not isHopping and not isStealing then
-            local bestModel, val = findBestBrainrot()
-            
             if not bestModel or val < S.minBrainrotValue then
                 isHopping = true
+                S.lastNotified = nil -- Reseteamos el aviso al cambiar de server
                 local displayVal = val > 0 and formatNumber(val) or "Ninguno"
                 local displayMin = formatNumber(S.minBrainrotValue)
                 
@@ -790,6 +855,23 @@ task.spawn(function()
                 
                 if S.autoServerHop and isHopping then
                     HopServer()
+                end
+            end
+        end
+        
+        -- 2. Lógica del Webhook (Si es mayor al mínimo, avisa)
+        if S.webhookEnabled and bestModel and not isHopping and not isStealing then
+            if val >= S.minBrainrotValue then
+                -- Solo avisar si es un Brainrot distinto al último notificado
+                if S.lastNotified ~= bestModel then
+                    S.lastNotified = bestModel
+                    local income = getBrainrotIncome(bestModel)
+                    sendWebhook(bestModel.Name, val, income)
+                    Window:Notify({ 
+                        Title = "Webhook Enviado", 
+                        Content = "¡Alerta enviada a Discord por: "..bestModel.Name.."!", 
+                        Duration = 5 
+                    })
                 end
             end
         end
@@ -857,6 +939,28 @@ MainTab:CreateInput({
         if parsed > 0 then
             S.minBrainrotValue = parsed
         end
+    end,
+})
+
+-- 🚨 TOGGLE Y URL DEL WEBHOOK
+MainTab:CreateToggle({
+    Name = "Activar Alertas Webhook",
+    Default = false,
+    Flag = "WebhookEnabled",
+    Callback = function(v)
+        S.webhookEnabled = v
+        S.lastNotified = nil
+    end,
+})
+
+MainTab:CreateInput({
+    Name = "Webhook URL",
+    Default = "",
+    Placeholder = "https://discord.com/api/webhooks/...",
+    Flag = "WebhookUrlInput",
+    Callback = function(text)
+        S.webhookUrl = text
+        S.lastNotified = nil
     end,
 })
 
@@ -1172,7 +1276,7 @@ end)
 task.delay(1, function()
     Window:Notify({
         Title    = "Draxi Script",
-        Content  = "Auto Execute configurado correctamente.",
+        Content  = "Sistema de Webhooks añadido.",
         Duration = 5,
     })
 end)

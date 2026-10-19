@@ -128,7 +128,6 @@ local S = {
     myBasePos = nil,
     autoServerHop = false,
     minBrainrotValue = 1000000,
-    -- 🚨 NUEVOS ESTADOS PARA EL WEBHOOK
     webhookEnabled = false,
     webhookUrl = "",
     lastNotified = nil
@@ -211,7 +210,6 @@ local function getBrainrotValue(model)
     return value * mutMultiplier
 end
 
--- 🚨 FUNCIÓN PARA OBTENER EL DINERO POR SEGUNDO
 local function getBrainrotIncome(model)
     local baseName = model.Name
     local income = 0
@@ -715,7 +713,8 @@ local function PerformStealSequence()
     local undergroundY = math.min(currentPos.Y - 10, groundY - 5)
     
     local underStartPos = Vector3.new(currentPos.X, undergroundY, currentPos.Z)
-    local underTargetPos = Vector3.new(primary.Position.X, undergroundY, primary.Position.Z)
+    -- 🚨 BAJAR 5 STUDS EXTRA AL VIAJAR
+    local underTargetPos = Vector3.new(primary.Position.X, undergroundY - 5, primary.Position.Z)
     local targetSurfacePos = primary.Position + Vector3.new(0, 3, 0)
 
     FlyTo(underStartPos, 30, function() return S.autoSteal end)
@@ -783,7 +782,8 @@ local function PerformStealSequence()
         local returnUndergroundY = math.min(currentPos.Y - 10, returnGroundY - 5)
         
         local underReturnStartPos = Vector3.new(currentPos.X, returnUndergroundY, currentPos.Z)
-        local underReturnTargetPos = Vector3.new(targetFloorPos.X, returnUndergroundY, targetFloorPos.Z)
+        -- 🚨 BAJAR 5 STUDS EXTRA AL VIAJAR DE VUELTA
+        local underReturnTargetPos = Vector3.new(targetFloorPos.X, returnUndergroundY - 5, targetFloorPos.Z)
         local safeSurfacePos = targetFloorPos + Vector3.new(0, 3, 0)
 
         FlyTo(underReturnStartPos, 30, function() return S.autoSteal end)
@@ -829,11 +829,10 @@ task.spawn(function()
     while task.wait(5) do
         local bestModel, val = findBestBrainrot()
         
-        -- 1. Lógica del Server Hop (Si es menor al mínimo, salta)
         if S.autoServerHop and not isHopping and not isStealing then
             if not bestModel or val < S.minBrainrotValue then
                 isHopping = true
-                S.lastNotified = nil -- Reseteamos el aviso al cambiar de server
+                S.lastNotified = nil
                 local displayVal = val > 0 and formatNumber(val) or "Ninguno"
                 local displayMin = formatNumber(S.minBrainrotValue)
                 
@@ -859,10 +858,8 @@ task.spawn(function()
             end
         end
         
-        -- 2. Lógica del Webhook (Si es mayor al mínimo, avisa)
         if S.webhookEnabled and bestModel and not isHopping and not isStealing then
             if val >= S.minBrainrotValue then
-                -- Solo avisar si es un Brainrot distinto al último notificado
                 if S.lastNotified ~= bestModel then
                     S.lastNotified = bestModel
                     local income = getBrainrotIncome(bestModel)
@@ -942,7 +939,6 @@ MainTab:CreateInput({
     end,
 })
 
--- 🚨 TOGGLE Y URL DEL WEBHOOK
 MainTab:CreateToggle({
     Name = "Activar Alertas Webhook",
     Default = false,
@@ -1276,7 +1272,7 @@ end)
 task.delay(1, function()
     Window:Notify({
         Title    = "Draxi Script",
-        Content  = "Sistema de Webhooks añadido.",
+        Content  = "Vuelo subterráneo mejorado (5 studs extra).",
         Duration = 5,
     })
 end)

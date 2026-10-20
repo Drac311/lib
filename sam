@@ -849,12 +849,12 @@ task.spawn(function()
                 
                 Window:Notify({ 
                     Title = "Auto Server Hop", 
-                    Content = "Mejor ("..displayVal..") < Mínimo ("..displayMin.."). Cambiando en 15s...", 
-                    Duration = 15 
+                    Content = "Mejor ("..displayVal..") < Mínimo ("..displayMin.."). Cambiando en 6s...", 
+                    Duration = 6 
                 })
                 
                 local t = 0
-                while t < 15 do
+                while t < 6 do
                     task.wait(1)
                     t = t + 1
                     if not S.autoServerHop then 

@@ -1,0 +1,1020 @@
+local LIB_URL = "https://raw.githubusercontent.com/Drac311/lib/refs/heads/main/DraxiLib.lua"
+
+local ok, Library = pcall(function()
+    return loadstring(game:HttpGet(LIB_URL))()
+end)
+if not ok or not Library then
+    return warn("[Draxi] Lib error: " .. tostring(Library))
+end
+
+local RS      = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local UIS     = game:GetService("UserInputService")
+local RunSvc  = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local TS      = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local LP      = Players.LocalPlayer
+
+local originalLighting = {
+    Ambient = Lighting.Ambient,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+    GlobalShadows = Lighting.GlobalShadows,
+    ClockTime = Lighting.ClockTime,
+    Brightness = Lighting.Brightness,
+    EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale,
+    EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale
+}
+
+local S = {
+    fly=false, noclipActive=false, espActive=false, playerESPActive=false,
+    antiRagdoll=false, antiKnockback=false, antiAfk=true, fullbright=false,
+    autoSteal=false, stealMode=nil, autoLockBase=false, myBasePos=nil,
+    autoServerHop=false, minBrainrotValue=1000000, webhookEnabled=false,
+    webhookUrl="", lastNotified="", rankingMode="value",
+    settleAfterTP = 2.5,
+    waitAfterFire = 2.0,
+    cooldown = 8.0,
+}
+
+-- ── Utilidades numéricas ─────────────────────────────────────
+local function parseValueString(inputStr)
+    if type(inputStr) == "number" then return inputStr end
+    if not inputStr or inputStr == "" then return 0 end
+    local c = tostring(inputStr):gsub("[^%w%.%-]",""):upper()
+    local m = { K=1e3, M=1e6, B=1e9, T=1e12 }
+    local s = c:match("([KMBT])$")
+    local n = s and c:sub(1,-2) or c
+    local num = tonumber(n)
+    if not num then return 0 end
+    if s and m[s] then num = num * m[s] end
+    return math.floor(num)
+end
+
+local function formatNumber(n)
+    if n >= 1e12 then return string.format("%.1fT", n/1e12)
+    elseif n >= 1e9 then return string.format("%.1fB", n/1e9)
+    elseif n >= 1e6 then return string.format("%.1fM", n/1e6)
+    elseif n >= 1e3 then return string.format("%.1fK", n/1e3)
+    else return tostring(math.floor(n)) end
+end
+
+-- ── Stats Success/Failure ──────────────────────────────────
+local stats = getgenv().__DraxiStats or { success=0, fail=0, lastMsg="" }
+getgenv().__DraxiStats = stats
+
+if not getgenv().__DraxiStealLogs then
+    getgenv().__DraxiStealLogs = true
+    local s = RS:FindFirstChild("RE/StealService/StealingSuccess", true)
+    local f = RS:FindFirstChild("RE/StealService/StealingFailure", true)
+    if s then s.OnClientEvent:Connect(function(...)
+        stats.success = stats.success + 1
+        local a = table.pack(...)
+        print(string.format("[STEAL] ✓ SUCCESS #%d args=%s",
+            stats.success, table.concat(a, ", ")))
+    end) end
+    if f then f.OnClientEvent:Connect(function(...)
+        stats.fail = stats.fail + 1
+        local a = table.pack(...)
+        stats.lastMsg = table.concat(a, " | ")
+        print(string.format("[STEAL] ✗ FAILURE #%d args=%s",
+            stats.fail, stats.lastMsg))
+    end) end
+end
+
+-- ── Webhook ────────────────────────────────────────────────
+local function sendWebhook(n, v, i)
+    if not S.webhookUrl or S.webhookUrl=="" then return end
+    local url = string.gsub(S.webhookUrl, "%s+", "")
+    if not string.find(url, "discord.com/api/webhooks") then return end
+    local req = syn and syn.request or http and http.request or http_request or request
+    if not req then return end
+    pcall(function()
+        req({ Url=url, Method="POST",
+            Headers={["Content-Type"]="application/json"},
+            Body=HttpService:JSONEncode({ content="🎉 **"+n+"**", embeds={{ title="Brainrot", color=65280, fields={
+                { name="🧠 Nombre", value="**"+tostring(n)+"**", inline=true },
+                { name="💰 Valor", value=formatNumber(v), inline=true },
+                { name="💵 Dinero/Seg", value=formatNumber(i), inline=true }
+            }, footer={ text="Draxi • "..os.date("%X") } }} })
+        })
+    end)
+end
+
+-- ── Ventana ────────────────────────────────────────────────
+local Window = Library:CreateWindow({
+    Name="Steal a Brainrot", Footer="Draxi • RightShift",
+    ToggleText="SAB", ToggleKey=Enum.KeyCode.RightShift,
+    StartVisible=true, Scale=1,
+    ScriptUrl="https://raw.githubusercontent.com/Drac311/lib/refs/heads/main/sam2"
+})
+local MainTab = Window:CreateTab("Main", 4483362458)
+
+local _autoStealToggle, _autoStealV2Toggle, _autoLockToggle
+local _noclipToggle, _ragdollToggle, _knockbackToggle
+local isStealing = false
+local isHopping = false
+local confirmGrabEvent = Instance.new("BindableEvent")
+
+local originalLockTarget, originalLockCFrame = nil, nil
+local originalLockTransparencies, originalLockGuis = {}, {}
+
+local function updateBasePos()
+    if LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") then
+        S.myBasePos = LP.Character.HumanoidRootPart.Position
+    end
+end
+updateBasePos()
+
+-- ── DB ─────────────────────────────────────────────────────
+local AnimalData = {}
+task.spawn(function()
+    local ok2, data = pcall(function()
+        return require(RS:WaitForChild("Datas",10):WaitForChild("Animals",10))
+    end)
+    if ok2 and type(data)=="table" then AnimalData=data; print("[Draxi] DB cargada.") end
+end)
+
+local function getMutationMultiplier(model)
+    local m = model:GetAttribute("Mutation") or ""
+    local mult = 1
+    if m=="Gold" or m=="Golden" then mult=1.5
+    elseif m=="Diamond" then mult=2
+    elseif m=="Rainbow" then mult=3
+    elseif m=="Candy" then mult=4 end
+    return mult
+end
+
+local function getBrainrotValue(model)
+    if not model then return 0 end
+    local v = 0
+    if AnimalData[model.Name] then
+        v = AnimalData[model.Name].Price or AnimalData[model.Name].Value or 0
+    end
+    if v==0 then v = model:GetAttribute("Price") or model:GetAttribute("Value") or 0 end
+    return v * getMutationMultiplier(model)
+end
+
+local function getBrainrotIncome(model)
+    if not model then return 0 end
+    local v = 0
+    if AnimalData[model.Name] then
+        v = AnimalData[model.Name].Income or AnimalData[model.Name].Money or 0
+    end
+    if v==0 then v = model:GetAttribute("Income") or model:GetAttribute("Money") or 0 end
+    return v * getMutationMultiplier(model)
+end
+
+local function isInFusion(model)
+    if not model or not model.Parent then return true end
+    return model:GetAttribute("InFusion") or model:GetAttribute("Fusing") or false
+end
+
+local function getMyPlot()
+    local plotsFolder = workspace:FindFirstChild("Plots")
+    if not plotsFolder then return nil end
+    for _, plot in ipairs(plotsFolder:GetChildren()) do
+        if plot:GetAttribute("Player")==LP.Name or plot:GetAttribute("Owner")==LP.Name then
+            return plot
+        end
+    end
+    return nil
+end
+
+local ROAD_KEYWORDS = { "road","path","street","walkway","sidewalk" }
+local function findNearbyRoad(fromPos)
+    local candidates = {}
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if obj:IsA("BasePart") then
+            for _, kw in ipairs(ROAD_KEYWORDS) do
+                if obj.Name:lower():find(kw) and obj.Size.Magnitude>30 then
+                    table.insert(candidates, obj); break
+                end
+            end
+        end
+    end
+    local best, bd = nil, 500
+    for _, p in ipairs(candidates) do
+        local d = (p.Position-fromPos).Magnitude
+        if d>5 and d<bd then bd=d; best=p end
+    end
+    return best
+end
+
+local function getPlotFloor(myPlot)
+    local lowestY = math.huge
+    local baseX, baseZ = myPlot:GetPivot().X, myPlot:GetPivot().Z
+    for _, p in ipairs(myPlot:GetDescendants()) do
+        if p:IsA("BasePart") and not p:IsDescendantOf(LP.Character) and p.Size.X>15 and p.Size.Z>15 then
+            if p.Position.Y<lowestY then lowestY=p.Position.Y; baseX=p.Position.X; baseZ=p.Position.Z end
+        end
+    end
+    if lowestY==math.huge then return myPlot:GetPivot().Position end
+    return Vector3.new(baseX, lowestY+3, baseZ)
+end
+
+local function getPlotDoorPosition(myPlot)
+    if not myPlot then return nil end
+    for _, d in ipairs(myPlot:GetDescendants()) do
+        if d:IsA("SpawnLocation") then return d.Position+Vector3.new(0,3,0) end
+    end
+    return getPlotFloor(myPlot)
+end
+
+local function getGroundY(x,z)
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.FilterDescendantsInstances = { LP.Character, workspace:FindFirstChild("Plots") }
+    local r = workspace:Raycast(Vector3.new(x,1000,z), Vector3.new(0,-2000,0), rp)
+    if r then return r.Position.Y end
+    return 0
+end
+
+local function findBestBrainrot(mode)
+    mode = mode or S.rankingMode or "value"
+    local myPlot = getMyPlot()
+    local plotsFolder = workspace:FindFirstChild("Plots")
+    if not plotsFolder then return nil, 0 end
+    local bestScore, bestEntry = -1, nil
+    for _, plot in ipairs(plotsFolder:GetChildren()) do
+        if plot ~= myPlot and plot:GetAttribute("Player") ~= LP.Name then
+            local podiums = plot:FindFirstChild("AnimalPodiums")
+            if podiums then
+                for _, podium in ipairs(podiums:GetChildren()) do
+                    local base = podium:FindFirstChild("Base")
+                    local spawn = base and base:FindFirstChild("Spawn")
+                    local att = spawn and spawn:FindFirstChild("PromptAttachment")
+                    local prompt = att and att:FindFirstChildOfClass("ProximityPrompt")
+                    if prompt and prompt.Enabled and ((prompt.ActionText or ""):lower():find("steal")) then
+                        local bName = prompt.ObjectText or ""
+                        local model = nil
+                        local slotNum = tonumber(podium.Name)
+                        for _, m in ipairs(plot:GetChildren()) do
+                            if m:IsA("Model") and m.Name==bName then
+                                local mSlot = m:GetAttribute("__PodiumSlot")
+                                if mSlot==nil or mSlot==slotNum or tostring(mSlot)==podium.Name then
+                                    model=m; break
+                                end
+                            end
+                        end
+                        if not model then model = plot:FindFirstChild(bName) end
+                        if model and not isInFusion(model) then
+                            local score = (mode=="income") and getBrainrotIncome(model) or getBrainrotValue(model)
+                            if score > bestScore then
+                                bestScore = score
+                                bestEntry = {
+                                    plot=plot, podium=podium, prompt=prompt, spawn=spawn,
+                                    model=model, pos=spawn.Position, name=bName,
+                                    owner=plot:GetAttribute("Player") or "?", score=score,
+                                }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestEntry, bestScore
+end
+
+-- ── ESP ────────────────────────────────────────────────────
+local currentBestHighlight, currentBestBillboard, espThread
+
+local function clearESP()
+    if currentBestHighlight then currentBestHighlight:Destroy(); currentBestHighlight=nil end
+    if currentBestBillboard then currentBestBillboard:Destroy(); currentBestBillboard=nil end
+end
+
+local function updateESP()
+    clearESP()
+    if not S.espActive then return end
+    local entry = findBestBrainrot(S.rankingMode or "value")
+    if not entry then return end
+    local val = getBrainrotValue(entry.model)
+    local inc = getBrainrotIncome(entry.model)
+    local hl = Instance.new("Highlight")
+    hl.Adornee = entry.model
+    hl.FillColor = Color3.fromRGB(255,0,0)
+    hl.OutlineColor = Color3.fromRGB(255,255,255)
+    hl.FillTransparency = 0.5
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = entry.model
+    currentBestHighlight = hl
+    local primary = entry.model.PrimaryPart or entry.model:FindFirstChildWhichIsA("BasePart")
+    if primary then
+        local bb = Instance.new("BillboardGui")
+        bb.Adornee = primary
+        bb.AlwaysOnTop = true
+        bb.Size = UDim2.new(0,240,0,60)
+        bb.StudsOffset = Vector3.new(0,3,0)
+        bb.Parent = entry.model
+        local txt = Instance.new("TextLabel")
+        txt.Size = UDim2.new(1,0,1,0)
+        txt.BackgroundTransparency = 1
+        txt.Text = string.format("%s\n💰 %s | 💵 %s/s\n👤 %s",
+            entry.model.Name, formatNumber(val), formatNumber(inc), entry.owner)
+        txt.TextColor3 = Color3.fromRGB(255,255,255)
+        txt.TextStrokeTransparency = 0
+        txt.TextStrokeColor3 = Color3.fromRGB(0,0,0)
+        txt.TextScaled = true
+        txt.Font = Enum.Font.FredokaOne
+        txt.Parent = bb
+        currentBestBillboard = bb
+    end
+end
+
+local trackedPlayerESP, playerESPThread = {}, nil
+
+local function clearPlayerESP()
+    for p, d in pairs(trackedPlayerESP) do
+        if d.Highlight then d.Highlight:Destroy() end
+        if d.Billboard then d.Billboard:Destroy() end
+    end
+    table.clear(trackedPlayerESP)
+end
+
+local function updatePlayerESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LP and player.Character then
+            local char = player.Character
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health>0 then
+                if not trackedPlayerESP[player] or not trackedPlayerESP[player].Highlight.Parent then
+                    local hl = Instance.new("Highlight")
+                    hl.Adornee = char
+                    hl.FillColor = Color3.fromRGB(0,150,255)
+                    hl.OutlineColor = Color3.fromRGB(255,255,255)
+                    hl.FillTransparency = 0.5
+                    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                    hl.Parent = char
+                    local bb = Instance.new("BillboardGui")
+                    bb.Adornee = hrp
+                    bb.AlwaysOnTop = true
+                    bb.Size = UDim2.new(0,200,0,50)
+                    bb.StudsOffset = Vector3.new(0,3,0)
+                    bb.Parent = char
+                    local txt = Instance.new("TextLabel")
+                    txt.Size = UDim2.new(1,0,1,0)
+                    txt.BackgroundTransparency = 1
+                    txt.TextColor3 = Color3.fromRGB(0,150,255)
+                    txt.TextStrokeTransparency = 0
+                    txt.TextStrokeColor3 = Color3.fromRGB(0,0,0)
+                    txt.TextScaled = true
+                    txt.Font = Enum.Font.FredokaOne
+                    txt.Parent = bb
+                    trackedPlayerESP[player] = { Highlight=hl, Billboard=bb, Text=txt, HRP=hrp }
+                end
+                local lc = LP.Character
+                if lc and lc:FindFirstChild("HumanoidRootPart") then
+                    local dist = math.floor((hrp.Position-lc.HumanoidRootPart.Position).Magnitude)
+                    trackedPlayerESP[player].Text.Text = string.format("%s\n📏 %d", player.Name, dist)
+                end
+            end
+        end
+    end
+    for p, d in pairs(trackedPlayerESP) do
+        if not p.Parent or not p.Character or not p.Character:FindFirstChild("HumanoidRootPart") or p.Character.Humanoid.Health<=0 then
+            if d.Highlight then d.Highlight:Destroy() end
+            if d.Billboard then d.Billboard:Destroy() end
+            trackedPlayerESP[p] = nil
+        end
+    end
+end
+
+-- ── Auto Lock ──────────────────────────────────────────────
+task.spawn(function()
+    while task.wait(5) do
+        if S.autoLockBase and LP.Character then
+            local hrp = LP.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local myPlot = getMyPlot()
+                if myPlot then
+                    local purchases = myPlot:FindFirstChild("Purchases")
+                    if purchases then
+                        local children = purchases:GetChildren()
+                        if #children>=3 then
+                            local target = children[3]
+                            local tp = target.PrimaryPart or (target:IsA("BasePart") and target) or target:FindFirstChildWhichIsA("BasePart")
+                            if tp then
+                                if target:IsA("Model") then target:PivotTo(hrp.CFrame)
+                                elseif target:IsA("BasePart") then target.CFrame = hrp.CFrame end
+                                for _, d in ipairs(target:GetDescendants()) do
+                                    if d:IsA("BasePart") then
+                                        d.Transparency=1; d.CanCollide=false; d.CanTouch=true; d.Massless=true
+                                    elseif d:IsA("BillboardGui") or d:IsA("SurfaceGui") then d.Enabled=false end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ── Hop ────────────────────────────────────────────────────
+local function HopServer()
+    Window:Notify({ Title="Hop", Content="Buscando...", Duration=3 })
+    local ok, res = pcall(game.HttpGet, game, "https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100")
+    if not ok then isHopping=false; return end
+    local ok2, decoded = pcall(HttpService.JSONDecode, HttpService, res)
+    if not ok2 or not decoded.data then isHopping=false; return end
+    local avail = {}
+    for _, srv in ipairs(decoded.data) do
+        if srv.playing < srv.maxPlayers and srv.id ~= game.JobId then
+            table.insert(avail, srv.id)
+        end
+    end
+    if #avail > 0 then
+        pcall(function() TS:TeleportToPlaceInstance(game.PlaceId, avail[math.random(1,#avail)], LP) end)
+    else
+        isHopping = false
+        Window:Notify({ Title="Hop", Content="Sin servers", Duration=3 })
+    end
+end
+
+-- ── Vuelo ──────────────────────────────────────────────────
+local function FlyTo(targetPos, speed, cancelCheck)
+    local char = LP.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = char.HumanoidRootPart
+    local startPos = hrp.Position
+    local dist = (targetPos-startPos).Magnitude
+    local duration = math.clamp(dist/speed, 0.5, 4)
+    local t0 = tick()
+    local conn
+    conn = RunSvc.RenderStepped:Connect(function()
+        if cancelCheck and not cancelCheck() then conn:Disconnect(); return end
+        if not char.Parent or not hrp.Parent then conn:Disconnect(); return end
+        local t = math.clamp((tick()-t0)/duration, 0, 1)
+        char:PivotTo(CFrame.new(startPos:Lerp(targetPos, t)))
+        if t>=1 then conn:Disconnect() end
+    end)
+    while conn.Connected do task.wait() end
+end
+
+-- ── Simulación de tecla E ──────────────────────────────────
+local function facePrompt(prompt)
+    local cam = workspace.CurrentCamera
+    local char = LP.Character
+    if not cam or not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local targetPart = prompt.Parent and prompt.Parent.Parent
+    if targetPart and targetPart:IsA("BasePart") then
+        cam.CFrame = CFrame.lookAt(hrp.Position + Vector3.new(0, 2, 0), targetPart.Position)
+    end
+end
+
+local function simulateE(prompt)
+    local hold = (prompt.HoldDuration or 1.5) + 0.3
+
+    -- Método VIM (funciona en background)
+    local vim = game:GetService("VirtualInputManager")
+    if vim and vim.SendKeyEvent then
+        local ok = pcall(function()
+            vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+            task.wait(hold)
+            vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+        end)
+        if ok then return "VIM" end
+    end
+
+    -- Fallback: InputHold
+    local ok2 = pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(hold)
+        prompt:InputHoldEnd()
+    end)
+    if ok2 then return "InputHold" end
+
+    -- Fallback: keypress (requiere focus)
+    if keypress and keyrelease then
+        local ok3 = pcall(function()
+            keypress("E")
+            task.wait(hold)
+            keyrelease("E")
+        end)
+        if ok3 then return "keypress" end
+    end
+
+    return nil
+end
+
+-- ── Secuencia de robo ──────────────────────────────────────
+local function PerformStealSequence(autoGrab, loopMode)
+    if isStealing then return nil end
+    isStealing = true
+
+    local oN, oR, oK = S.noclipActive, S.antiRagdoll, S.antiKnockback
+    S.noclipActive = true; S.antiRagdoll = true; S.antiKnockback = true
+    if _noclipToggle then _noclipToggle:Set(true, true) end
+    if _ragdollToggle then _ragdollToggle:Set(true, true) end
+    if _knockbackToggle then _knockbackToggle:Set(true, true) end
+
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    local function Cleanup()
+        S.noclipActive=oN; S.antiRagdoll=oR; S.antiKnockback=oK
+        if _noclipToggle then _noclipToggle:Set(oN, true) end
+        if _ragdollToggle then _ragdollToggle:Set(oR, true) end
+        if _knockbackToggle then _knockbackToggle:Set(oK, true) end
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            char.HumanoidRootPart.Anchored = false
+        end
+        isStealing = false
+        if not loopMode then
+            S.autoSteal = false
+            if S.stealMode=="v1" and _autoStealToggle then _autoStealToggle:Set(false,true) end
+            if S.stealMode=="v2" and _autoStealV2Toggle then _autoStealV2Toggle:Set(false,true) end
+            S.stealMode = nil
+        end
+    end
+
+    if not hrp then return Cleanup() end
+    local baseCFrame = hrp.CFrame
+    S.myBasePos = baseCFrame.Position
+
+    local entry = findBestBrainrot(S.rankingMode or "value")
+    if not entry then
+        Window:Notify({ Title="Auto Steal", Content="Sin brainrot", Duration=2 })
+        return Cleanup()
+    end
+
+    Window:Notify({ Title="Auto Steal",
+        Content="→ "..entry.name.." ("..entry.owner..")", Duration=2 })
+
+    if not S.autoSteal then return Cleanup() end
+
+    hrp.Anchored = true
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.CFrame = CFrame.new(entry.pos + Vector3.new(0, 3, 0))
+    print(string.format("[Draxi] TP → %s | settle=%.1fs", entry.name, S.settleAfterTP))
+    task.wait(S.settleAfterTP)
+    if not S.autoSteal then return Cleanup() end
+
+    if autoGrab then
+        facePrompt(entry.prompt)
+        task.wait(0.3)
+
+        local prevS = stats.success
+        local method = simulateE(entry.prompt)
+        print("[Draxi] Método E: "..tostring(method))
+        task.wait(S.waitAfterFire)
+
+        if stats.success > prevS then
+            print("[Draxi] ✓ SUCCESS confirmado")
+            getgenv().__DraxiWorkingMethod = method
+        else
+            print("[Draxi] ⚠ Sin SUCCESS. Último FAILURE: "..tostring(stats.lastMsg))
+        end
+    else
+        hrp.Anchored = false
+        Window:Notify({ Title="Auto Steal", Content="Coge y pulsa [PASO 2]", Duration=10 })
+        local clicked = false
+        local conn
+        conn = confirmGrabEvent.Event:Connect(function() clicked = true end)
+        local timeout = 30
+        while not clicked and timeout > 0 do
+            if not S.autoSteal then conn:Disconnect(); return Cleanup() end
+            task.wait(0.1); timeout = timeout - 0.1
+        end
+        conn:Disconnect()
+        if not clicked then return Cleanup() end
+        hrp.Anchored = true
+    end
+
+    if not S.autoSteal then return Cleanup() end
+
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.CFrame = baseCFrame
+    task.wait(0.5)
+
+    hrp.Anchored = false
+    Cleanup()
+end
+
+-- ── Loop webhook/hop ──────────────────────────────────────
+task.spawn(function()
+    task.wait(5)
+    while task.wait(5) do
+        local entry, val = findBestBrainrot("value")
+
+        if S.autoServerHop and not isHopping and not isStealing then
+            if not entry or val < S.minBrainrotValue then
+                isHopping = true
+                S.lastNotified = ""
+                Window:Notify({ Title="Auto Hop",
+                    Content="Mejor "..formatNumber(val).." < "..formatNumber(S.minBrainrotValue),
+                    Duration=6 })
+                local t = 0
+                while t < 6 do task.wait(1); t=t+1; if not S.autoServerHop then isHopping=false; break end end
+                if S.autoServerHop and isHopping then HopServer() end
+            end
+        end
+
+        if S.webhookEnabled and entry and not isHopping and not isStealing then
+            if val >= S.minBrainrotValue then
+                local uid = entry.name..tostring(val)
+                if S.lastNotified ~= uid then
+                    S.lastNotified = uid
+                    sendWebhook(entry.name, val, getBrainrotIncome(entry.model))
+                end
+            end
+        end
+    end
+end)
+
+-- ── Lanzador V1 ────────────────────────────────────────────
+local function StartStealSequence(autoGrab)
+    task.spawn(function()
+        local ok3, err = pcall(PerformStealSequence, autoGrab, false)
+        if not ok3 then
+            warn("[Draxi] error: "..tostring(err))
+            S.noclipActive=false; S.antiRagdoll=false; S.antiKnockback=false
+            S.autoSteal=false
+            if _noclipToggle then _noclipToggle:Set(false,true) end
+            if _ragdollToggle then _ragdollToggle:Set(false,true) end
+            if _knockbackToggle then _knockbackToggle:Set(false,true) end
+            if S.stealMode=="v1" and _autoStealToggle then _autoStealToggle:Set(false,true) end
+            if S.stealMode=="v2" and _autoStealV2Toggle then _autoStealV2Toggle:Set(false,true) end
+            S.stealMode = nil
+            isStealing = false
+            local c = LP.Character
+            if c and c:FindFirstChild("HumanoidRootPart") then c.HumanoidRootPart.Anchored=false end
+        end
+    end)
+end
+
+-- ── MENÚ ──────────────────────────────────────────────────
+MainTab:CreateDropdown({
+    Name="Modo Ranking", Options={"Valor","Dinero/Seg"}, Default="Valor", Flag="RankingMode",
+    Callback=function(opt)
+        S.rankingMode = (opt=="Dinero/Seg") and "income" or "value"
+    end,
+})
+
+_autoStealToggle = MainTab:CreateToggle({
+    Name="Robar Mejor (Manual)", Default=false, Flag="AutoSteal",
+    Callback=function(v)
+        if v then
+            if isStealing then return end
+            S.stealMode="v1"; S.autoSteal=true; StartStealSequence(false)
+        else
+            if S.stealMode=="v1" then S.autoSteal=false end
+        end
+    end,
+})
+
+_autoStealV2Toggle = MainTab:CreateToggle({
+    Name="Auto Steal Loop (E simulada)", Default=false, Flag="AutoStealV2",
+    Callback=function(v)
+        if v then
+            S.stealMode="v2"; S.autoSteal=true
+            task.spawn(function()
+                while S.autoSteal and S.stealMode=="v2" do
+                    pcall(PerformStealSequence, true, true)
+                    task.wait(S.cooldown)
+                end
+            end)
+        else
+            S.autoSteal=false; S.stealMode=nil
+        end
+    end,
+})
+
+MainTab:CreateButton({
+    Name="🟢 [PASO 2] ¡Ya lo cogí!",
+    Callback=function() confirmGrabEvent:Fire() end,
+})
+
+MainTab:CreateButton({
+    Name="🔍 Descubrir método E (roba 1 de prueba)",
+    Callback=function()
+        task.spawn(function()
+            local entry = findBestBrainrot(S.rankingMode or "value")
+            if not entry then
+                Window:Notify({ Title="Test", Content="Sin brainrot cerca", Duration=3 })
+                return
+            end
+            local char = LP.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+
+            Window:Notify({ Title="Test", Content="Probando métodos...", Duration=3 })
+            hrp.Anchored = true
+            hrp.CFrame = CFrame.new(entry.pos + Vector3.new(0, 3, 0))
+            task.wait(2)
+            facePrompt(entry.prompt)
+            task.wait(0.3)
+
+            local prevS = stats.success
+            local method = simulateE(entry.prompt)
+            task.wait(2)
+
+            if stats.success > prevS then
+                getgenv().__DraxiWorkingMethod = method
+                Window:Notify({
+                    Title="✔ Método funciona",
+                    Content="Usando: "..tostring(method),
+                    Duration=6,
+                })
+                print("[Draxi] Método que funciona: "..tostring(method))
+            else
+                Window:Notify({
+                    Title="✗ Falló",
+                    Content="Método: "..tostring(method).." | Failure: "..(stats.lastMsg~="" and stats.lastMsg or "vacío"),
+                    Duration=8,
+                })
+                print("[Draxi] Método falló: "..tostring(method).." | Failure: "..tostring(stats.lastMsg))
+            end
+
+            hrp.Anchored = false
+        end)
+    end,
+})
+
+MainTab:CreateSlider({
+    Name="Settle tras teleport (s)", Min=0.5, Max=6, Default=2.5, Increment=0.5,
+    Callback=function(v) S.settleAfterTP = v end,
+})
+
+MainTab:CreateSlider({
+    Name="Espera tras fire (s)", Min=0.5, Max=6, Default=2, Increment=0.5,
+    Callback=function(v) S.waitAfterFire = v end,
+})
+
+MainTab:CreateSlider({
+    Name="Cooldown entre ciclos (s)", Min=3, Max=30, Default=8, Increment=1,
+    Callback=function(v) S.cooldown = v end,
+})
+
+MainTab:CreateButton({
+    Name="📊 Ver stats actuales",
+    Callback=function()
+        Window:Notify({
+            Title="Stats",
+            Content=string.format("✓ %d | ✗ %d | Último fail: %s",
+                stats.success, stats.fail, stats.lastMsg ~= "" and stats.lastMsg or "(ninguno)"),
+            Duration=6,
+        })
+    end,
+})
+
+MainTab:CreateButton({
+    Name="🧪 Reset stats",
+    Callback=function()
+        stats.success = 0; stats.fail = 0; stats.lastMsg = ""
+        Window:Notify({ Title="Stats", Content="Reseteados", Duration=2 })
+    end,
+})
+
+MainTab:CreateToggle({
+    Name="Auto Server Hop", Default=false, Flag="AutoServerHop",
+    Callback=function(v) S.autoServerHop = v; if v then isHopping=false end end,
+})
+
+MainTab:CreateInput({
+    Name="Min Value", Default="1B", Placeholder="Ej: 500M, 1B", Flag="MinHopValueInput",
+    Callback=function(t)
+        local p = parseValueString(t)
+        if p>0 then S.minBrainrotValue = p end
+    end,
+})
+
+MainTab:CreateToggle({
+    Name="Webhook ON", Default=false, Flag="WebhookEnabled",
+    Callback=function(v) S.webhookEnabled=v; S.lastNotified="" end,
+})
+
+MainTab:CreateInput({
+    Name="Webhook URL", Default="", Placeholder="https://discord.com/api/webhooks/...",
+    Flag="WebhookUrlInput",
+    Callback=function(t) S.webhookUrl=t; S.lastNotified="" end,
+})
+
+_autoLockToggle = MainTab:CreateToggle({
+    Name="Auto Lock Base", Default=false, Flag="AutoLockBase",
+    Callback=function(v)
+        S.autoLockBase = v
+        if v then
+            local myPlot = getMyPlot()
+            if myPlot then
+                local purchases = myPlot:FindFirstChild("Purchases")
+                if purchases then
+                    local children = purchases:GetChildren()
+                    if #children>=3 then
+                        local target = children[3]
+                        if target then
+                            originalLockTarget = target
+                            if target:IsA("Model") then originalLockCFrame = target:GetPivot()
+                            elseif target:IsA("BasePart") then originalLockCFrame = target.CFrame end
+                            originalLockTransparencies = {}
+                            originalLockGuis = {}
+                            for _, d in ipairs(target:GetDescendants()) do
+                                if d:IsA("BasePart") then originalLockTransparencies[d]=d.Transparency
+                                elseif d:IsA("BillboardGui") or d:IsA("SurfaceGui") then originalLockGuis[d]=d.Enabled end
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            if originalLockTarget and originalLockCFrame then
+                pcall(function()
+                    if originalLockTarget:IsA("Model") then originalLockTarget:PivotTo(originalLockCFrame)
+                    elseif originalLockTarget:IsA("BasePart") then originalLockTarget.CFrame = originalLockCFrame end
+                    for p, t in pairs(originalLockTransparencies) do if p and p.Parent then p.Transparency=t end end
+                    for g, e in pairs(originalLockGuis) do if g and g.Parent then g.Enabled=e end end
+                end)
+            end
+            originalLockTarget=nil; originalLockCFrame=nil
+            originalLockTransparencies={}; originalLockGuis={}
+        end
+    end,
+})
+
+MainTab:CreateToggle({
+    Name="ESP Mejor Brainrot", Default=false, Flag="ESPBest",
+    Callback=function(v)
+        S.espActive = v
+        if v then
+            if not espThread then
+                espThread = task.spawn(function()
+                    while S.espActive do updateESP(); task.wait(2) end
+                    espThread = nil
+                end)
+            end
+        else clearESP() end
+    end,
+})
+
+MainTab:CreateToggle({
+    Name="ESP Jugadores", Default=false, Flag="ESPPlayers",
+    Callback=function(v)
+        S.playerESPActive = v
+        if v then
+            if not playerESPThread then
+                playerESPThread = task.spawn(function()
+                    while S.playerESPActive do updatePlayerESP(); task.wait(0.5) end
+                    playerESPThread = nil
+                end)
+            end
+        else clearPlayerESP() end
+    end,
+})
+
+_ragdollToggle = MainTab:CreateToggle({
+    Name="Anti-Ragdoll", Default=false, Flag="AntiRagdoll",
+    Callback=function(v) S.antiRagdoll=v end,
+})
+
+_knockbackToggle = MainTab:CreateToggle({
+    Name="Anti-Empuje", Default=false, Flag="AntiKnockback",
+    Callback=function(v) S.antiKnockback=v end,
+})
+
+MainTab:CreateToggle({
+    Name="Anti AFK", Default=true, Flag="AntiAfk",
+    Callback=function(v) S.antiAfk=v end,
+})
+
+local flyConn, flyBV
+local function stopFly()
+    if flyConn then flyConn:Disconnect(); flyConn=nil end
+    if flyBV then flyBV:Destroy(); flyBV=nil end
+end
+local function startFly()
+    local char = LP.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    local bv = Instance.new("BodyVelocity")
+    bv.MaxForce = Vector3.new(1e9,1e9,1e9)
+    bv.Velocity = Vector3.zero
+    bv.Parent = hrp
+    flyBV = bv
+    flyConn = RunSvc.RenderStepped:Connect(function()
+        if not S.fly or not hrp.Parent then return end
+        local cam = workspace.CurrentCamera
+        local dir = Vector3.zero
+        if UIS:IsKeyDown(Enum.KeyCode.W) then dir += cam.CFrame.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.S) then dir -= cam.CFrame.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.A) then dir -= cam.CFrame.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.D) then dir += cam.CFrame.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
+        if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
+        if dir.Magnitude>0 then dir = dir.Unit end
+        bv.Velocity = dir * 60
+    end)
+end
+
+MainTab:CreateToggle({
+    Name="Fly", Default=false, Flag="Fly",
+    Callback=function(v) S.fly=v; if v then startFly() else stopFly() end end,
+})
+
+_noclipToggle = MainTab:CreateToggle({
+    Name="Noclip", Default=false, Flag="Noclip",
+    Callback=function(v) S.noclipActive=v end,
+})
+
+local fullbrightConn
+MainTab:CreateToggle({
+    Name="Fullbright", Default=false, Flag="Fullbright",
+    Callback=function(v)
+        S.fullbright = v
+        if v then
+            if not fullbrightConn then
+                fullbrightConn = RunSvc.RenderStepped:Connect(function()
+                    if not S.fullbright then return end
+                    Lighting.Ambient = Color3.fromRGB(255,255,255)
+                    Lighting.OutdoorAmbient = Color3.fromRGB(255,255,255)
+                    Lighting.GlobalShadows = false
+                    Lighting.ClockTime = 12
+                    Lighting.Brightness = 3
+                    Lighting.FogEnd = 100000
+                end)
+            end
+        else
+            if fullbrightConn then fullbrightConn:Disconnect(); fullbrightConn=nil end
+            Lighting.Ambient = originalLighting.Ambient
+            Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+            Lighting.GlobalShadows = originalLighting.GlobalShadows
+            Lighting.ClockTime = originalLighting.ClockTime
+            Lighting.Brightness = originalLighting.Brightness
+            Lighting.EnvironmentDiffuseScale = originalLighting.EnvironmentDiffuseScale
+            Lighting.EnvironmentSpecularScale = originalLighting.EnvironmentSpecularScale
+        end
+    end,
+})
+
+MainTab:CreateButton({ Name="Server Hop Manual", Callback=HopServer })
+MainTab:CreateButton({
+    Name="Reiniciar Personaje",
+    Callback=function()
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum.Health = 0 end
+    end,
+})
+
+-- ── Background loops ─────────────────────────────────────
+task.spawn(function()
+    while task.wait(0.1) do
+        if S.antiRagdoll and LP.Character then
+            local hum = LP.Character:FindFirstChildOfClass("Humanoid")
+            if hum then
+                if hum.PlatformStand then hum.PlatformStand=false end
+                if hum.Sit then hum.Sit=false end
+                if hum:GetState()==Enum.HumanoidStateType.Physics then
+                    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    RunSvc.Heartbeat:Connect(function()
+        if S.antiKnockback and LP.Character then
+            local hrp = LP.Character:FindFirstChild("HumanoidRootPart")
+            local hum = LP.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum then
+                local vel = hrp.AssemblyLinearVelocity
+                if Vector3.new(vel.X,0,vel.Z).Magnitude > (hum.WalkSpeed+10) then
+                    hrp.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
+                end
+            end
+        end
+    end)
+end)
+
+local wasNoclip = false
+RunSvc.Stepped:Connect(function()
+    if S.noclipActive and LP.Character then
+        for _, p in ipairs(LP.Character:GetDescendants()) do
+            if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+        end
+        wasNoclip = true
+    elseif not S.noclipActive and wasNoclip and LP.Character then
+        for _, p in ipairs(LP.Character:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = true end
+        end
+        wasNoclip = false
+    end
+end)
+
+task.spawn(function()
+    local vu = game:GetService("VirtualUser")
+    LP.Idled:Connect(function()
+        if S.antiAfk then vu:CaptureController(); vu:ClickButton2(Vector2.new()) end
+    end)
+end)
+
+LP.CharacterAdded:Connect(function()
+    task.wait(1)
+    updateBasePos()
+    if S.fly then stopFly(); task.wait(0.2); startFly() end
+end)

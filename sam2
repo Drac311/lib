@@ -90,7 +90,7 @@ local function sendWebhook(brainrotName, value, income)
             ["color"] = 65280,
             ["fields"] = {
                 { ["name"] = "🧠 Brainrot", ["value"] = "**"..tostring(brainrotName).."**", ["inline"] = true },
-                { ["name"] = "💰 Valor", "value"] = formatNumber(value), ["inline"] = true },
+                { ["name"] = "💰 Valor", ["value"] = formatNumber(value), ["inline"] = true },
                 { ["name"] = "💵 Dinero/Seg", ["value"] = formatNumber(income), ["inline"] = true }
             },
             ["footer"] = { ["text"] = "Draxi Script • " .. os.date("%X") }
@@ -124,79 +124,6 @@ if not getgenv().__DraxiStealLogs then
         local a = table.pack(...)
         print("[STEAL] ✗ FAILURE: " .. table.concat(a, " | "))
     end) end
-end
-
--- ── Hook para loguear fires durante sim ────────────────────
-local simActive = false
-if not getgenv().__DraxiSimHook then
-    getgenv().__DraxiSimHook = true
-    local old
-    old = hookmetamethod(game, "__namecall", function(self, ...)
-        if getnamecallmethod() == "FireServer" and typeof(self) == "Instance" and simActive then
-            local n = self.Name
-            if n:match("^RE/[%x%-]+$") then
-                print("[SIM] Fire detectado → " .. n)
-            end
-        end
-        return old(self, ...)
-    end)
-end
-
--- ── Simulación de tecla E (hold) ───────────────────────────
-local function simulateEHold(holdDuration)
-    holdDuration = holdDuration or 1.5
-    local methodsTried = {}
-    local hexE = 0x45
-
-    -- Método 1: keypress/keyrelease global (string)
-    if type(keypress) == "function" and type(keyrelease) == "function" then
-        local ok = pcall(function()
-            keypress("E")
-            task.wait(holdDuration)
-            keyrelease("E")
-        end)
-        table.insert(methodsTried, "keypress(str):" .. tostring(ok))
-        if ok then return "keypress(str)" end
-
-        ok = pcall(function()
-            keypress(hexE)
-            task.wait(holdDuration)
-            keyrelease(hexE)
-        end)
-        table.insert(methodsTried, "keypress(hex):" .. tostring(ok))
-        if ok then return "keypress(hex)" end
-    end
-
-    -- Método 2: syn
-    if syn and syn.KeyPress and syn.KeyRelease then
-        local ok = pcall(function()
-            syn.KeyPress("E")
-            task.wait(holdDuration)
-            syn.KeyRelease("E")
-        end)
-        table.insert(methodsTried, "syn.KeyPress:" .. tostring(ok))
-        if ok then return "syn.KeyPress" end
-    end
-
-    -- Método 3: VirtualInputManager
-    local vim = game:GetService("VirtualInputManager")
-    if vim and vim.SendKeyEvent then
-        local ok = pcall(function()
-            vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-            task.wait(holdDuration)
-            vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-        end)
-        table.insert(methodsTried, "VIM:" .. tostring(ok))
-        if ok then return "VIM" end
-    end
-
-    -- Método 4: InputHoldBegin/End directo
-    local ok = pcall(function()
-        -- Nota: esta función solo dispara si el prompt está listo
-        -- No se llama aquí porque el user pidió "E simulada"
-    end)
-    table.insert(methodsTried, "fallback:InputHold")
-    return nil, methodsTried
 end
 
 -- ── Ventana ──────────────────────────────────────────────────
@@ -719,13 +646,52 @@ local function teleportAndVerify(hrp, targetPos)
         hrp.CFrame = CFrame.new(targetPos + Vector3.new(0, y, 0))
         task.wait(0.25)
         local dist = (hrp.Position - targetPos).Magnitude
-        print(string.format("[Draxi] TP try %d (Y+%d) → dist=%.1f", i, y, dist))
         if dist <= 12 then return dist end
     end
     return (hrp.Position - targetPos).Magnitude
 end
 
--- ── Secuencia de robo (E-hold + fallback prompt) ───────────
+-- ── Simular E (hold real, funciona en background) ──────────
+local function stealWithE(entry)
+    local prompt = entry.prompt
+    if not prompt or not prompt.Parent then return false, "no prompt" end
+    if not prompt.Enabled then return false, "disabled" end
+
+    local holdDur = (prompt.HoldDuration or 0.5) + 0.2
+
+    -- Método 1: InputHoldBegin/End (lo que el motor llama al pulsar E)
+    local ok1, err1 = pcall(function()
+        prompt:InputHoldBegin()
+    end)
+    if ok1 then
+        task.wait(holdDur)
+        pcall(function() prompt:InputHoldEnd() end)
+        return true, "InputHold"
+    end
+
+    -- Método 2: keypress (fallback, requiere focus)
+    if keypress and keyrelease then
+        local ok2 = pcall(function()
+            keypress("E")
+            task.wait(holdDur)
+            keyrelease("E")
+        end)
+        if ok2 then return true, "keypress" end
+    end
+
+    -- Método 3: VirtualInputManager
+    local vim = game:GetService("VirtualInputManager")
+    local ok3 = pcall(function()
+        vim:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+        task.wait(holdDur)
+        vim:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    end)
+    if ok3 then return true, "VIM" end
+
+    return false, "todos fallaron: " .. tostring(err1)
+end
+
+-- ── Secuencia de robo ───────────────────────────────────────
 local function PerformStealSequence(autoGrab, loopMode)
     if isStealing then return nil end
     isStealing = true
@@ -774,7 +740,7 @@ local function PerformStealSequence(autoGrab, loopMode)
 
     local entry = findBestBrainrot(S.rankingMode or "value")
     if not entry then
-        Window:Notify({ Title = "Auto Steal", Content = "No se encontró Brainrot.", Duration = 2 })
+        Window:Notify({ Title = "Auto Steal", Content = "No hay brainrot.", Duration = 2 })
         return Cleanup()
     end
 
@@ -783,19 +749,18 @@ local function PerformStealSequence(autoGrab, loopMode)
 
     if not S.autoSteal then return Cleanup() end
 
-    -- Teleport
     hrp.Anchored = true
-    teleportAndVerify(hrp, entry.pos)
-    task.wait(0.4)
+    local dist = teleportAndVerify(hrp, entry.pos)
+    print(string.format("[Draxi] TP → %s | dist=%.1f", entry.name, dist))
+    task.wait(0.35)
     if not S.autoSteal then return Cleanup() end
 
     if autoGrab then
-        -- Simular E hold
-        local method = simulateEHold((entry.prompt.HoldDuration or 1.5) + 0.2)
-        print("[Draxi] E-hold method: " .. tostring(method))
-        task.wait(0.4)
+        -- Simular E (InputHoldBegin/End real)
+        local ok, method = stealWithE(entry)
+        print("[Draxi] Robo con: " .. tostring(method))
+        task.wait(0.6)
     else
-        -- V1 manual
         hrp.Anchored = false
         Window:Notify({ Title = "Auto Steal", Content = "Coge y pulsa [PASO 2]", Duration = 10 })
         local clickedConfirm = false
@@ -817,10 +782,9 @@ local function PerformStealSequence(autoGrab, loopMode)
 
     if not S.autoSteal then return Cleanup() end
 
-    -- Volver a base
     hrp.AssemblyLinearVelocity = Vector3.zero
     hrp.CFrame = baseCFrame
-    task.wait(0.4)
+    task.wait(0.35)
 
     hrp.Anchored = false
     Cleanup()
@@ -865,7 +829,7 @@ task.spawn(function()
     end
 end)
 
--- ── Lanzador ────────────────────────────────────────────────
+-- ── Lanzador V1 ─────────────────────────────────────────────
 local function StartStealSequence(autoGrab)
     task.spawn(function()
         local success, err = pcall(PerformStealSequence, autoGrab, false)
@@ -917,7 +881,7 @@ _autoStealToggle = MainTab:CreateToggle({
 })
 
 _autoStealV2Toggle = MainTab:CreateToggle({
-    Name = "Auto Steal E-Hold (Loop)",
+    Name = "Auto Steal (E-hold Loop)",
     Default = false,
     Flag = "AutoStealV2",
     Callback = function(v)
@@ -940,34 +904,6 @@ _autoStealV2Toggle = MainTab:CreateToggle({
 MainTab:CreateButton({
     Name = "🟢 [PASO 2] ¡Ya lo cogí! Continuar",
     Callback = function() confirmGrabEvent:Fire() end,
-})
-
--- Test E-hold
-MainTab:CreateButton({
-    Name = "🧪 Probar E-Hold (roba 1 manual)",
-    Callback = function()
-        local entry = findBestBrainrot("value")
-        if not entry then
-            Window:Notify({ Title = "Test", Content = "Sin brainrots", Duration = 3 })
-            return
-        end
-        local char = LP.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-        
-        Window:Notify({ Title = "Test E-Hold", Content = "Teleportando...", Duration = 3 })
-        hrp.Anchored = true
-        teleportAndVerify(hrp, entry.pos)
-        task.wait(0.3)
-        
-        simActive = true
-        local method = simulateEHold((entry.prompt.HoldDuration or 1.5) + 0.2)
-        simActive = false
-        
-        Window:Notify({ Title = "Test E-Hold", Content = "Método: "..tostring(method), Duration = 5 })
-        hrp.Anchored = false
-        print("[Draxi] Test E-Hold con: " .. tostring(method))
-    end,
 })
 
 MainTab:CreateToggle({

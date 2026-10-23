@@ -152,16 +152,6 @@ task.spawn(function()
     if ok2 and type(data)=="table" then AnimalData=data end
 end)
 
-local function getMutationMultiplier(model)
-    local m = model:GetAttribute("Mutation") or ""
-    local mult = 1
-    if m=="Gold" or m=="Golden" then mult=1.5
-    elseif m=="Diamond" then mult=2
-    elseif m=="Rainbow" then mult=3
-    elseif m=="Candy" then mult=4 end
-    return mult
-end
-
 local INCOME_KEYS = {
     "income","money","earn","persec","persecond","per_sec","rate",
     "cps","mps","generation","gen","produce","profit","yield",
@@ -243,66 +233,78 @@ local function searchDescendants(model, keys)
     return 0
 end
 
-local function extractIncomeFromText(text)
-    if not text or text == "" then return 0 end
-    local numStr, suffix = text:match("([%d%.%,]+)([KMBTQ]?)/s")
-    if not numStr then
-        numStr, suffix = text:match("([%d%.%,]+)([KMBTQ]?)%s*/%s*[sS]")
-    end
-    if not numStr then return 0 end
-    numStr = numStr:gsub(",", "")
-    local num = tonumber(numStr) or 0
-    if suffix and suffix ~= "" then
-        local s = suffix:upper()
-        if SUFFIX[s] then num = num * SUFFIX[s] end
-    end
-    return num
-end
-
-local function searchGuiText(model, keys, isIncome)
+-- ★ NUEVA FUNCIÓN: Extrae Valor e Income directamente del BillboardGui
+local function getStatsFromBillboard(model)
+    if not model then return nil, nil end
+    
     for _, d in ipairs(model:GetDescendants()) do
-        if d:IsA("TextLabel") and d.Text and d.Text ~= "" then
-            if isIncome then
-                local n = extractIncomeFromText(d.Text)
-                if n > 0 then return n end
+        if d:IsA("BillboardGui") or d:IsA("TextLabel") then
+            local txt = ""
+            if d:IsA("TextLabel") then
+                txt = d.Text
             else
-                local n = parseNumberFromText(d.Text)
-                if n > 0 then return n end
+                local lbl = d:FindFirstChildWhichIsA("TextLabel", true)
+                if lbl then txt = lbl.Text end
+            end
+            
+            if txt and txt ~= "" then
+                -- Formato esperado: "Nombre\n💰 27.5K | 💵 160/s\n👤 Dueño"
+                local valStr, incStr = txt:match("💰%s*([%d%.%,KMBTQkmbtq]+)%s*|%s*💵%s*([%d%.%,KMBTQkmbtq]+)/s")
+                if valStr and incStr then
+                    return parseNumberFromText(valStr), parseNumberFromText(incStr)
+                end
+                -- Fallback por si los emojis están rotos: "27.5K | 160/s"
+                local valStr2, incStr2 = txt:match("([%d%.%,KMBTQkmbtq]+)%s*|%s*([%d%.%,KMBTQkmbtq]+)/s")
+                if valStr2 and incStr2 then
+                    return parseNumberFromText(valStr2), parseNumberFromText(incStr2)
+                end
             end
         end
     end
-    return 0
+    return nil, nil
 end
 
+-- ★ NUEVA LÓGICA DE INCOME (Lee la UI primero)
 local function getBrainrotIncome(model)
     if not model then return 0 end
-    local mult = getMutationMultiplier(model)
+    
+    -- 1. Prioridad Máxima: Leer del BillboardGui (incluye mutaciones y traits)
+    local guiVal, guiInc = getStatsFromBillboard(model)
+    if guiInc then return guiInc end
+    
+    -- 2. Respaldo: Atributos/DB (sin multiplicadores falsos)
     local entry = findAnimalEntry(model)
-    if entry and type(entry.Generation) == "number" then
-        return entry.Generation * mult
-    end
+    if entry and type(entry.Generation) == "number" then return entry.Generation end
+    
     local v = searchAnimalData(model, INCOME_KEYS)
-    if v > 0 then return v * mult end
-    v = searchAttributes(model, INCOME_KEYS);   if v>0 then return v*mult end
-    v = searchDescendants(model, INCOME_KEYS);  if v>0 then return v*mult end
-    v = searchGuiText(model, INCOME_KEYS, true)
-    if v > 0 then return v * mult end
+    if v > 0 then return v end
+    v = searchAttributes(model, INCOME_KEYS)
+    if v > 0 then return v end
+    v = searchDescendants(model, INCOME_KEYS)
+    if v > 0 then return v end
+    
     return 0
 end
 
+-- ★ NUEVA LÓGICA DE VALOR (Lee la UI primero)
 local function getBrainrotValue(model)
     if not model then return 0 end
-    local mult = getMutationMultiplier(model)
+    
+    -- 1. Prioridad Máxima: Leer del BillboardGui
+    local guiVal, guiInc = getStatsFromBillboard(model)
+    if guiVal then return guiVal end
+    
+    -- 2. Respaldo: Atributos/DB
     local entry = findAnimalEntry(model)
-    if entry and type(entry.Price) == "number" then
-        return entry.Price * mult
-    end
+    if entry and type(entry.Price) == "number" then return entry.Price end
+    
     local v = searchAnimalData(model, VALUE_KEYS)
-    if v > 0 then return v * mult end
-    v = searchAttributes(model, VALUE_KEYS);    if v>0 then return v*mult end
-    v = searchDescendants(model, VALUE_KEYS);   if v>0 then return v*mult end
-    v = searchGuiText(model, VALUE_KEYS, false)
-    if v > 0 then return v * mult end
+    if v > 0 then return v end
+    v = searchAttributes(model, VALUE_KEYS)
+    if v > 0 then return v end
+    v = searchDescendants(model, VALUE_KEYS)
+    if v > 0 then return v end
+    
     return 0
 end
 
@@ -867,14 +869,14 @@ local function PerformStealSequence(loopMode, minThreshold)
     task.wait(0.15)
     hrp.Anchored = false
 
-    -- ★ 2. Movimiento pequeño en círculos (3 studs) para que aparezca el Prompt
+    -- 2. Movimiento pequeño (Anti-cheat / prompt)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
         local randomDir = Vector3.new(math.random(-10, 10), 0, math.random(-10, 10)).Unit
         if randomDir.Magnitude == 0 then randomDir = Vector3.new(1, 0, 0) end
         hum:MoveTo(hrp.Position + (randomDir * 3))
         task.wait(0.3)
-        hum:MoveTo(hrp.Position) -- Detenerse
+        hum:MoveTo(hrp.Position)
         hrp.AssemblyLinearVelocity = Vector3.zero
     end
 
@@ -894,14 +896,12 @@ local function PerformStealSequence(loopMode, minThreshold)
     waitPromptStable(entry.prompt, 3)
     task.wait(0.2)
 
-    -- 4. Intentar robar
     local prevS = stats.success
     local wasInPlot = entry.model and entry.model:IsDescendantOf(entry.plot)
     
     local method, _reason = simulateE(entry.prompt)
     task.wait(S.waitAfterFire)
 
-    -- ★ 5. Comprobación de robo (por evento Success O por desaparición del modelo/prompt)
     local stolenByModel = false
     if not entry.model or not entry.model.Parent then
         stolenByModel = true
@@ -932,7 +932,7 @@ local function PerformStealSequence(loopMode, minThreshold)
 
     if S.kicking or not S.autoSteal then Cleanup() return nil end
 
-    -- 6. Volver a base
+    -- 4. Volver a base
     hrp.AssemblyLinearVelocity = Vector3.zero
     hrp.Anchored = true
     hrp.CFrame = CFrame.new(homePos)
